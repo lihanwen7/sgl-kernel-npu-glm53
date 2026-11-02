@@ -1,7 +1,8 @@
 import ctypes
 import logging
 import os
-from contextlib import contextmanager
+import threading
+from contextlib import ExitStack, contextmanager
 from typing import Optional
 
 import torch
@@ -33,6 +34,7 @@ class TorchMemorySaver:
         cuda_graph,
         pool=None,
         stream=None,
+        auto_dispatch_capture=False,
         capture_error_mode="global",
         tag: str = _TAG_DEFAULT,
         enable_cpu_backup: bool = False,
@@ -43,6 +45,7 @@ class TorchMemorySaver:
             cuda_graph=cuda_graph,
             pool=pool,
             stream=stream,
+            auto_dispatch_capture=auto_dispatch_capture,
             capture_error_mode=capture_error_mode,
             tag=tag,
             enable_cpu_backup=enable_cpu_backup,
@@ -79,6 +82,14 @@ class TorchMemorySaver:
         assert (
             self._impl_ctor_kwargs is not None
         ), "Cannot configure after initialization"
+        # Keep the caller's explicit graph-compatible allocator policy through
+        # optional imports that set their own default mode. Opt-in only.
+        if (
+            hook_mode == "torch"
+            and os.environ.get("TMS_PRESERVE_PRELOAD_MODE") == "1"
+            and os.environ.get("TMS_HOOK_MODE") == "preload"
+        ):
+            hook_mode = "preload"
         self._impl_ctor_kwargs["hook_mode"] = hook_mode
 
     def _ensure_initialized(self):
@@ -98,13 +109,20 @@ class _TorchMemorySaverImpl:
             path_binary=self._hook_util.get_path_binary()
         )
         self._mem_pool = torch.npu.MemPool(allocator=self._hook_util.get_allocator())
+        self._region_state = threading.local()
         _sanity_checks()
 
     @contextmanager
     def region(self, tag: str, enable_cpu_backup: bool):
-        with torch.npu.use_mem_pool(self._mem_pool):
-            with self._with_region_config(tag=tag, enable_cpu_backup=enable_cpu_backup):
-                yield
+        with ExitStack() as pool_stack:
+            pool_stack.enter_context(torch.npu.use_mem_pool(self._mem_pool))
+            previous_pool_stack = getattr(self._region_state, "pool_stack", None)
+            self._region_state.pool_stack = pool_stack
+            try:
+                with self._with_region_config(tag=tag, enable_cpu_backup=enable_cpu_backup):
+                    yield
+            finally:
+                self._region_state.pool_stack = previous_pool_stack
 
     @contextmanager
     def cuda_graph(
@@ -112,6 +130,7 @@ class _TorchMemorySaverImpl:
         cuda_graph,
         pool,
         stream,
+        auto_dispatch_capture,
         capture_error_mode,
         tag: str,
         enable_cpu_backup: bool,
@@ -120,7 +139,11 @@ class _TorchMemorySaverImpl:
             self._hook_mode == "preload"
         ), "Only hook_mode=preload supports pauseable CUDA Graph currently"
         with torch.npu.graph(
-            cuda_graph, pool=pool, stream=stream, capture_error_mode=capture_error_mode
+            cuda_graph,
+            pool=pool,
+            stream=stream,
+            auto_dispatch_capture=auto_dispatch_capture,
+            capture_error_mode=capture_error_mode,
         ):
             with self._with_region_config(tag=tag, enable_cpu_backup=enable_cpu_backup):
                 yield
@@ -147,19 +170,23 @@ class _TorchMemorySaverImpl:
             raise RuntimeError("disable() should be called only when tms is active")
 
         self._binary_wrapper.cdll.tms_set_interesting_region(False)
+        pool_stack = getattr(self._region_state, "pool_stack", None)
+        if pool_stack is not None:
+            # The allocator routes to the first active scope. End that scope
+            # while allocations belong to the temporary, non-pauseable pool.
+            pool_stack.close()
+        pool = None
         try:
-            # Affected by the memory allocation mechanism of torch_npu, a new mempool must be adopted.
-            # Otherwise, paused virtual addresses may be reused, causing memory conflicts and trigger errors.
             pool = torch.npu.MemPool()
             with torch.npu.use_mem_pool(pool):
                 yield
-
             torch.npu.synchronize()
-            # Note that this operation does not release the device memory immediately. The memory will
-            # only be released after the memory region is resumed and empty_cache() is invoked.
-            torch_npu._C._npu_releasePool(torch.npu.current_device(), pool.id)
-            del pool
         finally:
+            # use_mem_pool releases its scope; destruction owns the final release.
+            # Destroy the temporary pool before restoring the outer scope.
+            del pool
+            if pool_stack is not None:
+                pool_stack.enter_context(torch.npu.use_mem_pool(self._mem_pool))
             self._binary_wrapper.cdll.tms_set_interesting_region(True)
 
     def pause(self, tag: Optional[str]):

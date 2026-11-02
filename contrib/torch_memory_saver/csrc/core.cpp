@@ -12,9 +12,13 @@ TorchMemorySaver &TorchMemorySaver::instance() {
 aclError TorchMemorySaver::malloc(void **ptr, int device, size_t size,
                                   const std::string &tag,
                                   const bool enable_cpu_backup) {
+  *ptr = nullptr;
   aclrtDrvMemHandle allocHandle;
-  CANNUtils::cann_mem_create(&allocHandle, size, device);
-  int ret = aclrtReserveMemAddress(ptr, size, 0, nullptr, 0);
+  aclError ret = CANNUtils::cann_mem_create(&allocHandle, size, device);
+  if (ret != ACL_SUCCESS) {
+    return ret;
+  }
+  ret = aclrtReserveMemAddress(ptr, size, 0, nullptr, 0);
   SIMPLE_CHECK(ret == ACL_SUCCESS, "aclrtReserveMemAddress failed");
   ret = aclrtMapMem(*ptr, size, 0, allocHandle, 0);
   SIMPLE_CHECK(ret == ACL_SUCCESS, "aclrtMapMem failed");
@@ -22,7 +26,7 @@ aclError TorchMemorySaver::malloc(void **ptr, int device, size_t size,
     const std::lock_guard<std::mutex> lock(allocator_metadata_mutex_);
     allocation_metadata_.emplace(
         *ptr, AllocationMetadata{size, device, allocHandle, tag,
-                                 enable_cpu_backup, nullptr});
+                                 enable_cpu_backup, nullptr, false});
   }
 #ifdef TMS_DEBUG_LOG
   std::cout << "[torch_memory_saver.cpp] TorchMemorySaver.cuda_malloc "
@@ -46,10 +50,12 @@ aclError TorchMemorySaver::free(void *ptr) {
   static constexpr int32_t kSyncTimeoutMs = 3000;
   int ret = aclrtSynchronizeDeviceWithTimeout(kSyncTimeoutMs);
   SIMPLE_CHECK(ret == ACL_SUCCESS, "aclrtSynchronizeDeviceWithTimeout failed.");
-  ret = aclrtUnmapMem(ptr);
-  SIMPLE_CHECK(ret == ACL_SUCCESS, "aclrtUnmapMem failed.");
-  ret = aclrtFreePhysical(metadata.allocHandle);
-  SIMPLE_CHECK(ret == ACL_SUCCESS, "aclrtFreePhysical failed.");
+  if (!metadata.is_paused) {
+    ret = aclrtUnmapMem(ptr);
+    SIMPLE_CHECK(ret == ACL_SUCCESS, "aclrtUnmapMem failed.");
+    ret = aclrtFreePhysical(metadata.allocHandle);
+    SIMPLE_CHECK(ret == ACL_SUCCESS, "aclrtFreePhysical failed.");
+  }
   ret = aclrtReleaseMemAddress(ptr);
   SIMPLE_CHECK(ret == ACL_SUCCESS, "aclrtReleaseMemAddress failed.");
 
@@ -77,6 +83,9 @@ void TorchMemorySaver::pause(const std::string &tag) {
     if (!tag.empty() && metadata.tag != tag) {
       continue;
     }
+    if (metadata.is_paused) {
+      continue;
+    }
 
     if (metadata.enable_cpu_backup) {
       if (nullptr == metadata.cpu_backup) {
@@ -92,6 +101,7 @@ void TorchMemorySaver::pause(const std::string &tag) {
     SIMPLE_CHECK(ret == ACL_SUCCESS, "aclrtUnmapMem failed.");
     ret = aclrtFreePhysical(metadata.allocHandle);
     SIMPLE_CHECK(ret == ACL_SUCCESS, "aclrtFreePhysical failed.");
+    metadata.is_paused = true;
 
 #ifdef TMS_DEBUG_LOG
     std::cout << "[torch_memory_saver.cpp] TorchMemorySaver.pause"
@@ -116,11 +126,16 @@ void TorchMemorySaver::resume(const std::string &tag) {
     if (!tag.empty() && metadata.tag != tag) {
       continue;
     }
+    if (!metadata.is_paused) {
+      continue;
+    }
 
     aclrtDrvMemHandle newAllocHandle;
-    CANNUtils::cann_mem_create(&newAllocHandle, metadata.size, metadata.device);
+    aclError create_ret = CANNUtils::cann_mem_create(&newAllocHandle, metadata.size, metadata.device);
+    SIMPLE_CHECK(create_ret == ACL_SUCCESS, "aclrtMallocPhysical failed during resume");
 
-    aclrtMapMem(ptr, metadata.size, 0, newAllocHandle, 0);
+    int ret = aclrtMapMem(ptr, metadata.size, 0, newAllocHandle, 0);
+    SIMPLE_CHECK(ret == ACL_SUCCESS, "aclrtMapMem failed");
 
     if (metadata.enable_cpu_backup) {
       SIMPLE_CHECK(metadata.cpu_backup != nullptr,
@@ -143,5 +158,6 @@ void TorchMemorySaver::resume(const std::string &tag) {
 #endif
 
     metadata.allocHandle = newAllocHandle;
+    metadata.is_paused = false;
   }
 }

@@ -684,7 +684,10 @@ def causal_conv1d_fn_native(
 
     out = out[..., :seqlen]
     if return_final_states:
-        base = seqlens - (width - 1) * (~has_initial_state)
+        # initial_states is prepended to EVERY row of a mixed-prefix batch,
+        # including zero-filled history for fresh requests. Final-state offsets
+        # therefore depend on the physical input layout, not each request flag.
+        base = seqlens if initial_states is not None else seqlens - (width - 1)
         positions = base.unsqueeze(1) + torch.arange(
             width - 1, device=seqlens.device
         ).unsqueeze(0)

@@ -24,7 +24,7 @@
   } while (false)
 
 namespace CANNUtils {
-static void cann_mem_create(aclrtDrvMemHandle *alloc_handle, size_t size,
+static aclError cann_mem_create(aclrtDrvMemHandle *alloc_handle, size_t size,
                             int device) {
   aclrtPhysicalMemProp prop = {};
   prop.allocationType = ACL_MEM_ALLOCATION_TYPE_PINNED;
@@ -34,7 +34,7 @@ static void cann_mem_create(aclrtDrvMemHandle *alloc_handle, size_t size,
   prop.reserve = 0;
   prop.handleType = ACL_MEM_HANDLE_TYPE_NONE;
   aclError ret = aclrtMallocPhysical(alloc_handle, size, &prop, 0);
-  SIMPLE_CHECK(ret == ACL_SUCCESS, "aclrtMallocPhysical failed");
+  return ret; // Let the caller propagate OOM to the upstream caching allocator.
 }
 
 static int cann_ctx_get_device() {
