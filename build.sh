@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-BUILD_ATTENTIONS_MODULE="ON"
+BUILD_ATTENTIONS_MODULE="OFF"
 BUILD_DEEPEP_MODULE="ON"
 BUILD_DEEPEP_OPS="ON"
 BUILD_KERNELS_MODULE="ON"
@@ -154,7 +154,7 @@ function build_kernels()
     if [[ "$ONLY_BUILD_DEEPEP_KERNELs_MODULE" == "ON" ]]; then return 0; fi
     if [[ "$ONLY_BUILD_MEMORY_SAVER_MODULE" == "ON" ]]; then return 0; fi
 
-    CMAKE_DIR=""
+    CMAKE_DIR="$CURRENT_DIR"
     BUILD_DIR="build"
 
     cd "$CMAKE_DIR" || exit
@@ -175,7 +175,7 @@ function build_kernels()
     -B "$BUILD_DIR" \
     -S .
 
-    cmake --build "$BUILD_DIR" --target install -j 16
+    cmake --build "$BUILD_DIR" --target install -j "${BUILD_JOBS:-16}"
     cd -
 }
 
@@ -272,6 +272,7 @@ function make_sgl_kernel_npu_package()
 
 function build_attentions_kernels()
 {
+    if [[ "$BUILD_ATTENTIONS_MODULE" != "ON" ]]; then return 0; fi
     CUSTOM_OPP_DIR="${CURRENT_DIR}/python/attentions/attentions"
     KERNEL_DIR="csrc/attentions/build"
 

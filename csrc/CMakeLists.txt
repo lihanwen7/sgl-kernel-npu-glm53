@@ -153,7 +153,9 @@ target_link_directories(${OP_PLUGIN_NAME} PRIVATE
         ${TORCH_NPU_DIR}/lib
 )
 
-target_include_directories(${OP_PLUGIN_NAME} PRIVATE
+target_include_directories(${OP_PLUGIN_NAME} BEFORE PRIVATE
+        ${ASCEND_INCLUDE_DIR}
+        ${ASCEND_INCLUDE_DIR}/external
         ${PROJECT_OP_SRC_BASE}/utils
         ${PROJECT_SOURCE_DIR}/include
         ${PROJECT_OP_SRC_BASE}/causal_conv1d_update/op_kernel
@@ -164,11 +166,13 @@ target_include_directories(${OP_PLUGIN_NAME} PRIVATE
         ${PROJECT_OP_SRC_BASE}/causal_conv1d/op_host/tiling
         ${PROJECT_OP_SRC_BASE}/causal_conv1d/op_host
         ${PROJECT_OP_SRC_BASE}/causal_conv1d/op_host/stub
-        ${TORCH_DIR}/include
-        ${TORCH_DIR}/include/torch/csrc/api/include
-        ${TORCH_NPU_DIR}/include
+        # Prefer CANN Graph headers over the older copies bundled with torch_npu.
+        # Mixing both versions causes duplicate GE definitions with CANN 9.2.
         ${ASCEND_INCLUDE_DIR}
         ${ASCEND_INCLUDE_DIR}/external
         ${ASCEND_INCLUDE_DIR}/experiment/platform
         ${ASCEND_INCLUDE_DIR}/experiment/runtime
+        ${TORCH_DIR}/include
+        ${TORCH_DIR}/include/torch/csrc/api/include
+        ${TORCH_NPU_DIR}/include
 )

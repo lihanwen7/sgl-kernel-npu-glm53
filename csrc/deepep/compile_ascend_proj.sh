@@ -55,7 +55,7 @@ BuildOps() {
   fi
 
   echo "msopgen gen -i ./AddCustom.json -c ai_core-${soc_version} -f pytorch -lan cpp -out ${proj_name}"
-  msopgen gen -i ./AddCustom.json -c ai_core-${soc_version} -f pytorch -lan cpp -out ${proj_name}
+  python "$ASCEND_HOME_PATH/bin/msopgen" gen -i ./AddCustom.json -c ai_core-${soc_version} -f pytorch -lan cpp -out ${proj_name}
   rm -rf ./${proj_name}/op_host/add_custom*
   rm -rf ./${proj_name}/op_kernel/add_custom*
 }
